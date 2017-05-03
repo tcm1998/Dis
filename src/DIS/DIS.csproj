@@ -49,7 +49,7 @@
   <ItemGroup>
     <Compile Include="DiskContents.cs" />
     <Compile Include="DiskFactory.cs" />
-    <Compile Include="Disks\Disk.cs" />
+    <Compile Include="Disks\DiskImage.cs" />
     <Compile Include="DiskPanel.cs">
       <SubType>UserControl</SubType>
     </Compile>

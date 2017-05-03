@@ -300,17 +300,12 @@ namespace DIS
         //    Utils.Multiprint("", true);
         //    Utils.Multiprint("", true);
         //}
-
-        protected override byte[] ReadBootsector()
-        {
-            return readSector(0, 0, 1);
-        }        
+                
 
         public override byte[] readSector(int sectorNumber)
         {
             return readSector(GetPhysicalSector(sectorNumber));
         }
-
 
         private Tuple<int, int, byte> GetPhysicalSector(int sector)
         {
@@ -346,8 +341,6 @@ namespace DIS
             return retVal;
         }
 
-
-
         public override PhysicalContents PerformRead()
         {
             throw new NotImplementedException();
@@ -361,7 +354,7 @@ namespace DIS
             {
                 Read();
             }
-            return GetFilesnames();           
+            return GetFilesnames(0);           
         }
     }    
 }

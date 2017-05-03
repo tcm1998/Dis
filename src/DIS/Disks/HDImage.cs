@@ -21,6 +21,7 @@ namespace DIS
             public long numSectors { get; set; }
             public int partType { get; set; }
         }
+              
 
         public HDImage(string filename)
             : base(filename)
@@ -32,25 +33,20 @@ namespace DIS
             : base(filename, contents)
         {
             
-        }
-
-        protected override byte[] ReadBootsector()
-        {
-            throw new NotImplementedException();
-        }
+        }        
 
         public override PhysicalContents PerformRead()
         {
-            throw new NotImplementedException();
+            return null;    // HD images don't have physical contants
         }
 
         public override byte[] readSector(int sectorNumber)
         {
-            int offset = 0;
+            long offset = 0;
             int size = _geometry.BytesPerSector;
             if (sectorNumber == 0)
             {
-                offset = 0;
+                offset = fileOffset;
                 size = 512;
             }
             else
@@ -59,7 +55,7 @@ namespace DIS
                 {
                     SetGeometry();
                 }
-                offset = sectorNumber * _geometry.BytesPerSector;
+                offset = (sectorNumber * _geometry.BytesPerSector) + fileOffset;
             }
             byte[] result = new byte[size];
             FileStream stream = new FileStream(_filename,FileMode.Open);
@@ -78,7 +74,8 @@ namespace DIS
 
         private List<LogicalEntity> GetPartitions(byte[] contents)
         {
-            List<PartitionInfo>  partitions = new List<PartitionInfo>();
+            List<LogicalEntity> entities = new List<LogicalEntity>();
+            char partLetter = 'A';
             bool done = false;
             for (int i = 0x1EE; !done && (i > 0x0D); i -= 0x10)
             {
@@ -96,22 +93,18 @@ namespace DIS
                     part.endTrack = contents[i + 6];
                     part.endCylinder = contents[i + 7];
                     part.StartTotalSector = contents[i + 8] + (contents[i + 9] << 8) + (contents[i + 10] << 16) + (contents[i + 11] << 24);
-                    partitions.Add(part);
+                    LogicalEntity newPartition = new LogicalPartition();
+                    newPartition.diskImage = this;
+                    newPartition.name = "Partition " + partLetter.ToString();
+                    newPartition.startOffset = (part.StartTotalSector * 512);
+                    newPartition.data = part;
+                    entities.Add(newPartition);
+                    partLetter++;                   
                 }
                 else
                 {
                     done = true;
                 }
-            }
-            List<LogicalEntity> entities = new List<LogicalEntity>();
-            char partLetter = 'A';
-            foreach (PartitionInfo info in partitions)
-            {
-                LogicalEntity newPartition = new LogicalPartition();
-                newPartition.diskImage = this;
-                newPartition.name = "Partition " + partLetter.ToString();
-                entities.Add(newPartition);
-                partLetter++;
             }
             return entities;
         }

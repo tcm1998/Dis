@@ -16,7 +16,9 @@ namespace DIS
 
         public override List<LogicalEntity> GetItems()
         {
-            throw new NotImplementedException();
+            diskImage.fileOffset = startOffset;
+            diskImage.Read();           
+            return diskImage.GetFilesnames(0);
         }
     }    
 }

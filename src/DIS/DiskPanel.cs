@@ -122,6 +122,15 @@ namespace DIS
         private void lstFiles_ItemActivate(object sender, EventArgs e)
         {
             ListView view = (ListView)sender;
+            Object tag = view.FocusedItem.Tag;
+            LogicalEntity entity = tag as LogicalEntity;
+            if (entity != null)
+            {
+                List<LogicalEntity> items = entity.GetItems();
+                DisplayItems(items);
+            }
+
+
             //BasicReader br = new BasicReader();
 //            DiskReader.FileContents contents = _reader.ReadFile(view.FocusedItem.Text);
             //string[] test = br.Translate(data);
@@ -291,14 +300,19 @@ namespace DIS
             }
             _disk = DiskFactory.CreateDisk(filename, diskType);                                   
             List<LogicalEntity> names = _disk.GetItems();
+            DisplayItems(names);            
+            _titleBar.Text = Path.GetFileName(filename);                      
+        }
+
+        private void DisplayItems(List<LogicalEntity> items)
+        {
             _fileList.Items.Clear();
-            foreach (LogicalEntity entity in names)
+            foreach (LogicalEntity entity in items)
             {
                 ListViewItem item = new ListViewItem(entity.name);
                 item.Tag = entity;
                 _fileList.Items.Add(item);
-            }
-            _titleBar.Text = Path.GetFileName(filename);                      
+            }    
         }
     }
 }

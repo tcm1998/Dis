@@ -16,7 +16,13 @@ namespace DIS
 
         public override List<LogicalEntity> GetItems()
         {
-            throw new NotImplementedException();
+            List<LogicalEntity> retVal = null;
+            DirEntry entry = data as DirEntry;
+            if (entry != null)
+            {
+                retVal = diskImage.GetFilesnames(entry.startCluster); 
+            }
+            return retVal;
         }
     }
 }

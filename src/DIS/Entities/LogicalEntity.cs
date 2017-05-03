@@ -12,6 +12,8 @@ namespace DIS
         public DiskImage diskImage {get;set;}        
         public object data {get;set;}
         public String name { get; set; }
+        public long startOffset { get; set; }
+        public long length { get; set; }
 
         public abstract List<LogicalEntity> GetItems();        
     }
