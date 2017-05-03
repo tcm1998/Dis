@@ -1,0 +1,511 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.IO;
+
+namespace DiskExplorer
+{
+    public class DiskReader : IDisposable
+    {
+        private class PartitionInfo
+        {
+            public bool bootFlag;
+            public int startHead;
+            public int startCylinder;
+            public int startSector;
+            public int endHead;
+            public int endCylinder;
+            public int endTrack;
+            public long StartTotalSector;
+            public long numSectors;
+            public int partType;
+        }
+
+        private enum DiskType
+        { 
+            NONE,            
+            DSK,
+            DMK,
+            PDI,
+            SVI,
+            HD
+        }
+
+        public class DirEntry
+        {
+            public byte[] contents;
+            public String filename;
+            public int startCluster;
+            public int length;
+            public int attributes;
+        }
+
+        public class FileContents
+        {
+            public byte[] data;
+            public List<DirEntry> entrees;
+            public bool isDirectory;
+        }
+
+        private List<PartitionInfo> partitions;
+        private int currentPartition;
+        private DiskType imageType;
+        private FileStream stream;
+        private long streamLength;
+        private int BytesPerSector;
+        private int SectorsPerCluster;
+        private int ReservedSectors;
+        private int NumberOfFATs;
+        private int MaxDirEntries;
+        private int NumSectors;
+        private int MediaDescriptor;
+        private int SectorsPerFAT;
+        private int HiddenSectors;        
+        private int FATOffset;
+        private int startDataSector;
+        private int BytesPerTrack;
+        private int SectorsPerTrack;
+        private int NumberOfSides;
+        private string fileName;
+        
+
+        private List<DirEntry> dirEntries = null;
+        private byte[] FATContents = null;
+
+        public string name { get; set; }
+
+        public DiskReader(string file)
+        {
+            fileName = file;
+            BytesPerSector = 0;
+            stream = null;
+            imageType = DiskType.NONE;
+            try
+            {                
+                stream = new FileStream(fileName, FileMode.Open);
+                streamLength = stream.Length;
+                if (streamLength > 2000000)
+                {
+                    currentPartition = -1;
+                    imageType = DiskType.HD;
+                    BytesPerSector = 512; // assume 512 bytes per sector
+                    SetupPartitions(ReadSector(0, 512));
+                    currentPartition = 0;
+                                     
+                }
+                else if (fileName.ToUpper().EndsWith(".DMK"))
+                {
+                    imageType = DiskType.DMK;
+                    byte[] data = new byte[2];
+                    stream.Position = 2;
+                    stream.Read(data,0,2);
+                    BytesPerTrack = data[0] + (data[1] << 8);
+                }
+                SetGeometry(ReadSector(0,512));               
+            }
+            catch (Exception ex)
+            {
+                   
+            }
+        }        
+
+        public void Close()
+        {
+            Dispose();     
+        }
+
+        public void SetGeometry(byte[] data)
+        {
+            BytesPerSector = data[11] + (data[12] << 8);
+            SectorsPerCluster = data[13];
+            ReservedSectors = data[14] + (data[15] << 8);
+            NumberOfFATs = data[16];
+            MaxDirEntries = data[17] + (data[18] << 8);
+            NumSectors = data[19] + (data[20] << 8);
+            MediaDescriptor = data[21];
+            SectorsPerFAT = data[22] + (data[23] << 8);
+            SectorsPerTrack = data[24] + (data[25] << 8);
+            NumberOfSides = data[26] + (data[27] << 8);
+            HiddenSectors = data[28] + (data[29] << 8);
+            FATOffset = BytesPerSector;
+            startDataSector = (SectorsPerFAT * NumberOfFATs) + ReservedSectors + 7;
+        }
+
+        private void SetupPartitions(byte[] contents)
+        {
+            partitions = new List<PartitionInfo>();
+            bool done = false;
+            for (int i = 0x1EE; !done && (i > 0x0D); i -= 0x10)
+            {
+                int numSect = contents[i + 12] + (contents[i + 13] << 8) + (contents[i+14] << 16) + (contents[i+15] << 24);
+                if (numSect != 0)
+                {
+                    PartitionInfo part = new PartitionInfo();
+                    part.numSectors = numSect;
+                    part.bootFlag = ((contents[i] & 0x80) != 0);
+                    part.startHead = contents[i + 1];
+                    part.startSector = contents[i + 2];
+                    part.startCylinder = contents[i + 3];
+                    part.partType = contents[i + 4];
+                    part.endHead = contents[i + 5];
+                    part.endTrack = contents[i + 6];
+                    part.endCylinder = contents[i + 7];
+                    part.StartTotalSector = contents[i + 8] + (contents[i + 9] << 8) + (contents[i + 10] << 16) + (contents[i + 11] << 24);
+                    partitions.Add(part);
+                }
+                else
+                {
+                    done = true;
+                }
+            }
+        }
+
+        public byte[] ReadSector(int SectorNumber, int size)
+        { 
+            byte[] retVal = null;
+            if (imageType == DiskType.DMK)
+            {
+                retVal = ReadDMKSector(GetPhysicalSector(SectorNumber),size);
+            }
+            else if (imageType == DiskType.HD)
+            {
+                retVal = ReadHDSector(currentPartition, SectorNumber, 512);
+            }
+            else
+            {
+                retVal = ReadDSKSector(SectorNumber, size);
+            }
+            return retVal;
+        }
+
+        private Tuple<int,int,int> GetPhysicalSector(int sector)
+        {
+            int track = 0;
+            int side = 0;
+            int sectnum = 1;
+            if (sector != 0)
+            {
+                track = sector / (NumberOfSides * SectorsPerTrack);
+                side = (sector / SectorsPerTrack) % 2;
+                sectnum = (sector % SectorsPerTrack) + 1;
+            }
+            return new Tuple<int,int,int>(track,side,sectnum);
+        }
+
+        private byte[] ReadDMKSector(Tuple<int, int, int> location, int size)
+        {
+            int track = location.Item1;   
+            int side = location.Item2;
+            int sector = location.Item3;
+            byte[] retVal = new byte[size];
+            int totalTrackBlocks = (track * 2) + side;
+            stream.Position = (totalTrackBlocks * BytesPerTrack) + 0x10 + ((sector-1) * 2);
+            stream.Read(retVal, 0, 2);
+            int IDAM = retVal[0] + ((retVal[1] & 0x3F) << 8);
+            stream.Position = (totalTrackBlocks * BytesPerTrack) + 0x10 + IDAM;
+            stream.Read(retVal, 0, 50);
+            int count = 0;
+            int dataIDAM = -1;
+            do
+            {   
+                if ((retVal[count] == 0xA1) && (retVal[count + 1] == 0xA1) && 
+                    (retVal[count + 2] == 0xA1) && (retVal[count + 3] == 0xFB))
+                {
+                    dataIDAM = count + 3;
+                }
+                count++;
+            }
+            while ((dataIDAM == -1) && (count < 43));
+            if (dataIDAM != -1)
+            {
+                stream.Position = (totalTrackBlocks * BytesPerTrack) + 0x10 + IDAM + dataIDAM + 1;
+            }
+
+            stream.Read(retVal, 0, size);
+            return retVal;
+        }
+
+        private byte[] ReadDSKSector(long Sector, int size)
+        {            
+            byte[] retVal = new byte[size];
+            stream.Position = Sector * BytesPerSector;  // initialy, Bytes per sector is 0, which is ok for reading the boot sector
+            stream.Read(retVal, 0, size);
+            return retVal;
+        }
+
+        private byte[] ReadHDSector(int Partition, int Sector, int size)
+        {            
+            long SectorToRead = Sector;
+            if (currentPartition != -1)
+            {
+                SectorToRead += partitions[currentPartition].StartTotalSector;
+            }
+            return ReadDSKSector(SectorToRead, size);
+        }
+
+        public byte[] ReadBootSector()
+        {            
+            bool succes = false;
+            byte[] bootData = null;            
+            
+            byte[] data = null;   
+            try
+            {
+                data = new byte[28];                
+                if (stream.Length >= 28)
+                {
+                    stream.Position = 0;
+                    stream.Read(data, 0, 28);
+                    SetGeometry(data);
+                    succes = true;
+                }                    
+            }
+            catch (Exception)
+            {
+                   
+            }
+            if (succes)
+            {
+                if (stream.Length >= BytesPerSector)
+                {
+                    bootData = new byte[BytesPerSector];
+                    Array.Copy(data, 0, bootData, 0, 28);
+                    stream.Read(bootData, 28, (BytesPerSector - 28));
+                }                           
+            }                   
+            return bootData;            
+        }
+
+        public FileContents ReadFile(String filename)
+        {
+            FileContents contents = new FileContents();            
+            int numEntries = dirEntries.Count;
+            for (int entryNum = 0; (contents == null) && (entryNum < numEntries); entryNum++)
+            { 
+                if (dirEntries[entryNum].filename == filename)
+                {
+                    contents.data = ReadFile(dirEntries[entryNum]);
+                    contents.isDirectory = (dirEntries[entryNum].attributes & 16) != 0;
+                }
+            }
+            if (contents.isDirectory)
+            { 
+                bool done = true;
+                contents.entrees = GetFilenames(contents.data, true, ref done);
+            }
+            return contents;
+            
+        }
+
+        private byte[] ReadFile(DirEntry entry)
+        {
+            List<byte[]> tempContents = new List<byte[]>();
+            int numClusters = (NumSectors - (SectorsPerFAT * NumberOfFATs) + ReservedSectors + 7) / 2;
+            if (FATContents == null)
+            {
+                GetFAT();
+            }                     
+            int cluster = entry.startCluster;
+            int offset = 0;            
+            while ((cluster >= 2) && (cluster < numClusters) && (cluster < 0xFF8))      
+            {               
+                tempContents.Add(GetClusterData(cluster));                    
+                cluster = GetNextCluster(FATContents, cluster);                
+            }
+            if (entry.length > 0)
+            {
+                entry.contents = new byte[entry.length];
+            }
+            else
+            {
+                entry.contents = new byte[tempContents.Count * SectorsPerCluster * BytesPerSector];
+            }
+            for (int i = 0; i < tempContents.Count; i++)
+            {
+                int bytesToCopy = tempContents[i].Length;
+                if (bytesToCopy > entry.contents.Length - offset)                
+                {
+                    bytesToCopy = entry.contents.Length - offset;       
+                }
+                Array.Copy(tempContents[i], 0, entry.contents, offset, bytesToCopy);
+                offset += bytesToCopy;            
+            }            
+            return entry.contents;
+        }
+
+        private void GetFAT()
+        {
+            int FATSize = SectorsPerFAT * BytesPerSector;
+            FATContents = new byte[FATSize];
+            for (int iFATSector = 0; iFATSector < SectorsPerFAT; iFATSector++)
+            {
+                byte[] data = ReadSector(1 + iFATSector, BytesPerSector);
+                Array.Copy(data, 0, FATContents, iFATSector * BytesPerSector, BytesPerSector);
+            }            
+        }
+
+        public bool ReadDisk()
+        {
+            bool allSucces = true;
+            byte[] contents = null;
+            if (BytesPerSector == 0)
+            {
+                byte[] boot = ReadBootSector();
+                if (boot != null)
+                {
+                    contents = new byte[NumSectors * BytesPerSector];
+                    Array.Copy(boot,0,contents,0,boot.Length);
+                }                
+            }
+            if (contents != null)
+            {
+                //dirEntries = GetFilenames(contents);
+                int numClusters = (NumSectors - (SectorsPerFAT * NumberOfFATs) + ReservedSectors + 7) / 2;
+                bool[] clusterUsed = new bool[numClusters];
+                foreach (DirEntry entry in dirEntries)
+                {
+                    ReadFile(entry);                    
+                }
+            }
+            else
+            {
+                allSucces = false;
+            }
+            return allSucces;
+        }
+
+        public bool WriteFiles()
+        {
+            bool first = true;
+            string dir = Path.Combine(Path.GetDirectoryName(fileName), Path.GetFileNameWithoutExtension(fileName));
+            if (dirEntries.Count > 0)
+            { 
+                foreach (DirEntry entry in dirEntries)
+                {
+                    if (first)
+                    { 
+                        Directory.CreateDirectory(dir);
+                        first = false;
+                    }
+                    try
+                    {
+                        File.WriteAllBytes(Path.Combine(dir, entry.filename), entry.contents);
+                    }
+                    catch (Exception)
+                    { 
+                        // just ignore this entry    
+                    }                    
+                }                   
+            }   
+            return true;
+        }
+
+        private int GetNextCluster(byte[] contents, int cluster)
+        {
+            int newCluster;            
+            { 
+                if ((cluster & 1) == 0)
+                {
+                    newCluster = contents[((cluster >> 1) * 3)] + ((contents[((cluster >> 1) * 3) + 1] & 0x0F) << 8);
+                }
+                else
+                {
+                    newCluster = ((contents[(((cluster - 1) >> 1) * 3) + 1] & 0xF0) >> 4) + (contents[(((cluster - 1) >> 1) * 3) + 2] << 4);
+                }
+            }            
+            return newCluster;
+        }
+
+        private byte[] GetClusterData(int clusterNumber)
+        {            
+            int ClusterSize = SectorsPerCluster * BytesPerSector;
+            byte[] retVal = new byte[ClusterSize];
+            int DataOffset = startDataSector + ((clusterNumber - 2) * SectorsPerCluster);
+            for (int ClusterSector = 0; ClusterSector < SectorsPerCluster; ClusterSector++)
+            {
+                byte[] data = ReadSector(DataOffset + ClusterSector, BytesPerSector);
+                Array.Copy(data, 0, retVal, ClusterSector * BytesPerSector, BytesPerSector);
+            }
+            return retVal;
+        }
+
+        public List<String> GetFilesnames()
+        {
+            List<String> names = new List<String>();             
+            try
+            {   
+                int dirSectorOffset = ((SectorsPerFAT * NumberOfFATs) + ReservedSectors);
+                int numDirSectors = (MaxDirEntries * 32) / BytesPerSector;
+                bool done = false;
+                for (int dirSect = 0; !done && (dirSect < numDirSectors); dirSect++)
+                {
+                    byte[] data = ReadSector(dirSectorOffset + dirSect, BytesPerSector);
+                    GetFilenames(data,(dirSect == 0), ref done);
+                }                
+            }
+            catch
+            { 
+                
+            }         
+            foreach (DirEntry entry in dirEntries)
+            {
+                names.Add(entry.filename);        
+            }          
+            return names;
+        }
+
+        private List<DirEntry> GetFilenames(byte[] contents, bool init, ref bool done)
+        {
+            done = false;
+            if (init)
+            { 
+                dirEntries = new List<DirEntry>();
+            }               
+            int dirOffset = 0;
+            int numEntries = contents.Length / 32;
+            for (int i = 0; i < numEntries; i++)
+            {
+                byte firstByte = contents[dirOffset + i * 32];
+                if ((firstByte != 0xE5) && (firstByte != 0))
+                {
+                    DirEntry entry = new DirEntry();
+                    entry.attributes = contents[dirOffset + i * 32 + 11];
+                    entry.startCluster = contents[dirOffset + i * 32 + 26] + (contents[dirOffset + i * 32 + 27] << 8);
+                    entry.length = contents[dirOffset + i * 32 + 28] + (contents[dirOffset + i * 32 + 29] << 8) + (contents[dirOffset + i * 32 + 30] << 16) + (contents[dirOffset + i * 32 + 31] << 24);
+                    if ((entry.startCluster > 1) && (entry.length >= 0) && (entry.length < ((720*1024)-startDataSector)))
+                    { 
+                        string filename = ASCIIEncoding.UTF8.GetString(contents, dirOffset + i * 32, 11);
+                        entry.filename = cleanFilename(filename);
+                        dirEntries.Add(entry);
+                    }                   
+                }
+                else if (firstByte == 0)
+                {
+                    done = true;    
+                }
+            }
+            return dirEntries;
+        }
+
+        private string cleanFilename(string filename)
+        {
+            string retVal = "";
+            retVal = filename.Substring(0, 8).Trim();
+            if (filename.Length > 8)
+            { 
+                string ext = filename.Substring(8, filename.Length - 8).Trim();
+                retVal += ("." + ext);      
+            }                         
+            return retVal;
+        }
+
+        public void Dispose()
+        {
+            if (stream != null)
+            {
+                stream.Close();
+            }
+        }
+    }
+}
